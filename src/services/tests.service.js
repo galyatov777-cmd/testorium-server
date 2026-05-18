@@ -111,6 +111,7 @@ export const submitAnswer = async ({
 	const client = await pool.connect();
 
 	try {
+		answer_ids = answer_ids.map(Number);
 		await client.query('BEGIN');
 
 		// 1. отримуємо всі правильні відповіді
@@ -146,8 +147,8 @@ export const submitAnswer = async ({
 		}
 
 		// 4. перевірка правильності
-		const sortedUser = [...answer_ids].sort();
-		const sortedCorrect = [...correctIds].sort();
+		const sortedUser = [...answer_ids].sort((a, b) => a - b);
+		const sortedCorrect = [...correctIds].sort((a, b) => a - b);
 
 		const isCorrect =
 			sortedUser.length === sortedCorrect.length &&
