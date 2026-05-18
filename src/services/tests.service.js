@@ -106,55 +106,136 @@ export const startTest = async ({ user_id, test_id }) => {
 export const submitAnswer = async ({
 	result_id,
 	question_id,
-	answer_ids, // 👈 масив
+	answer_ids = [],
+	answer_text = '',
 }) => {
 	const client = await pool.connect();
 
 	try {
-		answer_ids = answer_ids.map(Number);
 		await client.query('BEGIN');
 
-		// 1. отримуємо всі правильні відповіді
-		const correctRes = await client.query(
+		// normalize ids
+		answer_ids = answer_ids.map(Number);
+
+		// question type
+		const questionRes = await client.query(
 			`
-			SELECT id
-			FROM answers
-			WHERE question_id = $1 AND is_correct = true
+			SELECT question_type
+			FROM questions
+			WHERE id = $1
 		`,
 			[question_id],
 		);
 
-		const correctIds = correctRes.rows.map(r => r.id);
+		const questionType = questionRes.rows[0]?.question_type;
 
-		// 2. очищаємо попередні відповіді
+		// очистка попередніх відповідей
 		await client.query(
 			`
 			DELETE FROM user_answers
-			WHERE result_id = $1 AND question_id = $2
+			WHERE result_id = $1
+			AND question_id = $2
 		`,
 			[result_id, question_id],
 		);
 
-		// 3. записуємо нові
-		for (const answerId of answer_ids) {
-			await client.query(
+		// =========================
+		// TEXT QUESTION
+		// =========================
+
+		if (questionType === 'text') {
+			const correctTextRes = await client.query(
 				`
-				INSERT INTO user_answers (result_id, question_id, answer_id)
-				VALUES ($1, $2, $3)
+				SELECT id, answer_text
+				FROM answers
+				WHERE question_id = $1
+				AND is_correct = true
+				LIMIT 1
 			`,
-				[result_id, question_id, answerId],
+				[question_id],
 			);
+
+			const correctAnswer = correctTextRes.rows[0];
+
+			const correctText = correctAnswer?.answer_text?.trim().toLowerCase();
+
+			const userText = answer_text?.trim().toLowerCase();
+
+			const isCorrect = correctText === userText;
+
+			// якщо відповідь правильна —
+			// записуємо correct answer id
+			if (isCorrect && correctAnswer?.id) {
+				answer_ids = [correctAnswer.id];
+
+				await client.query(
+					`
+					INSERT INTO user_answers (
+						result_id,
+						question_id,
+						answer_id
+					)
+					VALUES ($1, $2, $3)
+				`,
+					[result_id, question_id, correctAnswer.id],
+				);
+			} else {
+				answer_ids = [];
+			}
 		}
 
-		// 4. перевірка правильності
+		// =========================
+		// SINGLE / MULTIPLE / TRUEFALSE
+		// =========================
+
+		if (questionType !== 'text') {
+			for (const answerId of answer_ids) {
+				await client.query(
+					`
+					INSERT INTO user_answers (
+						result_id,
+						question_id,
+						answer_id
+					)
+					VALUES ($1, $2, $3)
+				`,
+					[result_id, question_id, answerId],
+				);
+			}
+		}
+
+		// =========================
+		// CORRECT ANSWERS
+		// =========================
+
+		const correctRes = await client.query(
+			`
+			SELECT id
+			FROM answers
+			WHERE question_id = $1
+			AND is_correct = true
+		`,
+			[question_id],
+		);
+
+		const correctIds = correctRes.rows.map(r => Number(r.id));
+
+		// =========================
+		// CHECK CORRECTNESS
+		// =========================
+
 		const sortedUser = [...answer_ids].sort((a, b) => a - b);
+
 		const sortedCorrect = [...correctIds].sort((a, b) => a - b);
 
 		const isCorrect =
 			sortedUser.length === sortedCorrect.length &&
 			sortedUser.every((val, i) => val === sortedCorrect[i]);
 
-		// 5. рахуємо score (по питаннях)
+		// =========================
+		// SCORE
+		// =========================
+
 		const scoreRes = await client.query(
 			`
 			SELECT 
@@ -174,7 +255,8 @@ export const submitAnswer = async ({
 					AND NOT EXISTS (
 						SELECT 1
 						FROM user_answers ua
-						JOIN answers a ON a.id = ua.answer_id
+						JOIN answers a 
+							ON a.id = ua.answer_id
 						WHERE ua.result_id = $1
 						AND ua.question_id = q.id
 						AND a.is_correct = false
@@ -184,19 +266,26 @@ export const submitAnswer = async ({
 				COUNT(DISTINCT q.id) AS total
 
 			FROM questions q
+
 			WHERE q.test_id = (
-				SELECT test_id FROM test_results WHERE id = $1
+				SELECT test_id
+				FROM test_results
+				WHERE id = $1
 			)
 		`,
 			[result_id],
 		);
 
 		const correct = Number(scoreRes.rows[0].correct);
+
 		const total = Number(scoreRes.rows[0].total);
 
 		const score = total === 0 ? 0 : Math.round((correct / total) * 100);
 
-		// 6. оновлюємо результат
+		// =========================
+		// UPDATE RESULT
+		// =========================
+
 		await client.query(
 			`
 			UPDATE test_results
