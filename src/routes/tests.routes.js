@@ -15,8 +15,8 @@ const router = Router();
 
 router.post('/', authMiddleware, createTest);
 
-router.post('/start', startTest);
-router.post('/answer', submitAnswer);
+router.post('/start', authMiddleware, startTest);
+router.post('/answer', authMiddleware, submitAnswer);
 
 router.get('/', getAllTests);
 router.get('/my', authMiddleware, getMyTests);
